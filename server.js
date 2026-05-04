@@ -603,10 +603,9 @@ async function executeTool(name, args, userId) {
       }
 
 
-      // ════════ AGENT IRRIGATION IA (LangGraph + Gemma-2-2b-it + Double DQN + FAO-56 RAG) ════════
+      // ════════ AGENT IRRIGATION IA (PyTorch DQN Ensemble + FAO-56) ════════
       case 'irrigation_advisor': {
         const { field_id, soil_moisture, location } = args;
-        // Paramètres du modèle RL (agrismart_agent_config.json)
         const SM_OPTIMAL_LOW  = 0.208;
         const SM_OPTIMAL_HIGH = 0.28;
         const ACTIONS_MM      = [0, 5, 10, 15, 20];
@@ -622,17 +621,50 @@ async function executeTool(name, args, userId) {
           } catch(e) { /* champ optionnel */ }
         }
 
-        const loc = location || fieldInfo.farm_location || 'Tunis';
+        const loc  = location || fieldInfo.farm_location || 'Tunis';
+        const smVal = parseFloat(soil_moisture);
+        if (isNaN(smVal) || smVal < 0 || smVal > 1)
+          return { error: 'soil_moisture invalide — valeur entre 0 et 1 (ex: 0.25 pour 25%)' };
 
-        // Appel au microservice Python LangGraph si IRRIGATION_URL est défini
+        // Bilan hydrique FAO-56 (fallback si HF Space indisponible)
+        const SM_TARGET  = (SM_OPTIMAL_LOW + SM_OPTIMAL_HIGH) / 2;
+        const SOIL_DEPTH = 300;
+        const deficit_mm = Math.max(0, (SM_TARGET - smVal) * SOIL_DEPTH);
+        const faoMm = ACTIONS_MM.reduce((p, c) =>
+          Math.abs(c - deficit_mm) < Math.abs(p - deficit_mm) ? c : p);
+
+        function faoResult(mm) {
+          let status, advice;
+          if (smVal >= SM_OPTIMAL_HIGH) {
+            mm = 0; status = 'surplus';
+            advice = `Sol saturé (${(smVal*100).toFixed(1)}%), aucune irrigation nécessaire.`;
+          } else if (smVal >= SM_OPTIMAL_LOW) {
+            mm = 0; status = 'optimal';
+            advice = `Humidité optimale FAO-56 (${(smVal*100).toFixed(1)}%). Aucune irrigation requise.`;
+          } else if (smVal >= 0.19) {
+            mm = Math.min(mm, 5); status = 'sous_optimal';
+            advice = `Légère baisse (${(smVal*100).toFixed(1)}%). Apport : ${mm} mm.`;
+          } else if (smVal >= 0.15) {
+            status = 'sous_optimal';
+            advice = `Humidité basse (${(smVal*100).toFixed(1)}%). Déficit ~${Math.round(deficit_mm)} mm — Irrigation : ${mm} mm.`;
+          } else if (smVal >= 0.10) {
+            mm = Math.max(mm, 15); status = 'faible';
+            advice = `Stress hydrique (${(smVal*100).toFixed(1)}%). Irrigation urgente : ${mm} mm.`;
+          } else {
+            mm = 20; status = 'critique';
+            advice = `Stress sévère (${(smVal*100).toFixed(1)}%) ! Irrigation immédiate : 20 mm.`;
+          }
+          return { mm, status, advice };
+        }
+
+        // Appel HF Space — le DQN PyTorch fournit la recommandation principale
         if (IRRIGATION_URL) {
           try {
             const resp = await fetch(`${IRRIGATION_URL}/irrigate`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                soil_moisture: parseFloat(soil_moisture) || 0.25,
-                location: loc,
+                soil_moisture: smVal, location: loc,
                 crop:      fieldInfo.current_crop || null,
                 soil_type: fieldInfo.soil_type    || null,
                 field_id:  field_id               || null,
@@ -640,47 +672,38 @@ async function executeTool(name, args, userId) {
               signal: AbortSignal.timeout(20000)
             });
             if (resp.ok) {
-              const pyResult = await resp.json();
-              return { ...pyResult, field: fieldInfo, source: 'langgraph_dqn' };
+              const py = await resp.json();
+              // Garder la recommandation DQN mais appliquer les bornes de sécurité FAO-56
+              let dqnMm = py.recommended_irrigation_mm ?? faoMm;
+              // Borne haute : sol saturé → 0 mm impératif
+              if (smVal >= SM_OPTIMAL_HIGH) dqnMm = 0;
+              // Borne basse : stress sévère → minimum 15 mm
+              if (smVal < 0.10) dqnMm = Math.max(dqnMm, 20);
+              else if (smVal < 0.15) dqnMm = Math.max(dqnMm, 15);
+              const { status, advice } = faoResult(dqnMm);
+              console.log(`🌿 DQN: ${py.recommended_irrigation_mm}mm → final: ${dqnMm}mm (sm=${(smVal*100).toFixed(1)}%)`);
+              return {
+                ...py,
+                recommended_irrigation_mm: dqnMm,
+                status, advice,
+                field: fieldInfo,
+                source: 'pytorch_dqn_ensemble+fao56',
+              };
             }
           } catch(e) {
-            console.warn('⚠️ Service irrigation Python indisponible, fallback règles FAO-56:', e.message);
+            console.warn('⚠️ HF Space indisponible, fallback FAO-56:', e.message);
           }
         }
 
-        // ── Fallback : règles basées sur la bande optimale FAO-56 ──
-        const sm = parseFloat(soil_moisture);
-        if (isNaN(sm) || sm < 0 || sm > 1)
-          return { error: 'soil_moisture invalide — fournir une valeur entre 0 et 1 (ex: 0.25 pour 25%)' };
-
-        let recommended_mm, status, advice;
-        if (sm >= SM_OPTIMAL_HIGH) {
-          recommended_mm = 0; status = 'surplus';
-          advice = 'Sol bien humide, aucune irrigation nécessaire. Risque de saturation.';
-        } else if (sm >= SM_OPTIMAL_LOW) {
-          recommended_mm = 0; status = 'optimal';
-          advice = 'Humidité dans la bande optimale FAO-56 [20.8%–28%]. Pas d\'irrigation requise.';
-        } else if (sm >= 0.15) {
-          recommended_mm = 10; status = 'sous_optimal';
-          advice = 'Humidité légèrement basse. Irrigation modérée recommandée (10 mm).';
-        } else if (sm >= 0.10) {
-          recommended_mm = 15; status = 'faible';
-          advice = 'Stress hydrique détecté. Irrigation urgente recommandée (15 mm).';
-        } else {
-          recommended_mm = 20; status = 'critique';
-          advice = 'Stress hydrique sévère ! Irrigation immédiate (20 mm) pour éviter les pertes.';
-        }
-
+        // ── Fallback pur FAO-56 ───────────────────────────────────────────────
+        const { mm: recommended_mm, status, advice } = faoResult(faoMm);
         return {
-          field:                     fieldInfo,
-          soil_moisture:             sm,
-          optimal_band:              [SM_OPTIMAL_LOW, SM_OPTIMAL_HIGH],
-          status,
-          recommended_irrigation_mm: recommended_mm,
-          available_actions_mm:      ACTIONS_MM,
-          advice,
+          field: fieldInfo, soil_moisture: smVal,
+          optimal_band: [SM_OPTIMAL_LOW, SM_OPTIMAL_HIGH],
+          status, recommended_irrigation_mm: recommended_mm,
+          available_actions_mm: ACTIONS_MM, advice,
           source: 'rules_fao56',
-          note: IRRIGATION_URL ? null : 'Définir IRRIGATION_URL pour activer le modèle DQN complet (LangGraph + Gemma-2-2b-it + FAO-56 RAG).'
+          note: IRRIGATION_URL ? null : 'Définir IRRIGATION_URL pour activer le modèle DQN PyTorch.',
         };
       }
       default:
@@ -941,7 +964,7 @@ app.post('/api/agent/irrigation', auth, async (req, res) => {
   res.json(result);
 });
 
-// Migration : normalise la contrainte farm_type au démarrage
+// Migration : normalise les contraintes au démarrage
 pool.connect().then(async c => {
   try {
     await c.query(`
@@ -951,6 +974,27 @@ pool.connect().then(async c => {
     `);
     console.log('✅ Contrainte farm_type OK');
   } catch(e) { console.error('⚠️ Migration farm_type:', e.message); }
+
+  try {
+    // Trouve et supprime uniquement les contraintes CHECK portant sur la colonne 'role'
+    const res = await c.query(`
+      SELECT c.conname
+      FROM pg_constraint c
+      JOIN pg_class t ON c.conrelid = t.oid
+      WHERE t.relname = 'users'
+        AND c.contype = 'c'
+        AND pg_get_constraintdef(c.oid) ILIKE '%role%'
+    `);
+    for (const row of res.rows) {
+      await c.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS "${row.conname}"`);
+    }
+    await c.query(`
+      ALTER TABLE users ADD CONSTRAINT users_role_check
+        CHECK (role IN ('farmer','breeder','vet','agronomist','admin'))
+    `);
+    console.log('✅ Contrainte users.role OK');
+  } catch(e) { console.error('⚠️ Migration users.role:', e.message); }
+
   c.release();
 }).catch(e => console.error('⚠️ Migration:', e.message));
 
