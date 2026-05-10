@@ -4,6 +4,12 @@
 
 > Integrated Project — ESPRIT, MSc Data Science, class 4DS5.
 
+**Branch `agrismart`:** this branch merges the historical root-level
+Flutter tree (`android/`, `lib/` at repo root) with the course
+monorepo under `agrismart_flutter_package/` and `modules/`. Prefer
+`agrismart_flutter_package/flutter_app` for the latest on-device
+detection and Arabic voice assistant.
+
 ---
 
 ## Overview
@@ -266,7 +272,8 @@ The resulting `reconverted/agrismart_disease.tflite` can be copied straight into
 | Branch | Purpose |
 |---|---|
 | `main` | Stable, presentation-ready code |
-| `integration_branch` | Cross-module integration (this README and the Flutter app live here) |
+| `agrismart` | Merged monorepo + legacy root Flutter app |
+| `integration_branch` | Cross-module integration |
 | `feature/*`, `*-branch` | Per-contributor or per-module feature branches |
 
 ---

@@ -1,0 +1,64 @@
+name: agrismart
+description: "AgriSmart — plateforme agricole (dashboard, maladies TFLite hors ligne, assistant vocal arabe)."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.10.8 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.5+1
+  dio: ^5.9.1
+  flutter_secure_storage: ^10.0.0
+  uuid: ^4.5.2
+  sqflite: ^2.4.2
+  path: ^1.9.1
+  image_picker: ^1.2.1
+  permission_handler: ^12.0.1
+  http: ^1.2.2
+  shared_preferences: ^2.3.0
+
+  # ── On-device crop disease (TFLite) + camera ─────────────────────
+  camera: ^0.10.5+9
+  tflite_flutter: 0.12.1
+  image: ^4.1.7
+  path_provider: ^2.1.2
+
+  # ── Assistant vocal hors ligne (Qwen GGUF + Whisper + TTS) ──────
+  llama_flutter_android: ^0.2.3
+  whisper_ggml: ^1.7.0
+  record: ^6.0.0
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.1
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/logo.png
+    - assets/agrismart_disease.tflite
+    - assets/class_names.json
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/logo.png"
+
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/images/logo.png
+  android: true
+  ios: true
